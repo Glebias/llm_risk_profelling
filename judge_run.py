@@ -19,27 +19,37 @@ from clearml import Task, StorageManager
 from schemas import JudgeResult
 from llm import JUDGE_SYSTEM_PROMPT, save_llm_interaction, loads_lenient
 
-
+print("SCRIPT START", flush=True)
 # ---------------------------------------------------------------------------
 # 1. ClearML task + параметры (редактируются в Web UI перед постановкой в очередь)
 # ---------------------------------------------------------------------------
-task = Task.init(
-    project_name="pershin-medailab/LLM_verification_risk_profiles",
-    task_name="qwen72b-judge-batch",
-    output_uri="s3://api.blackhole2.ai.innopolis.university:443/pershin-medailab",
-)
+USE_S3_OUTPUT = False  # поставьте False на время локального теста без настроенного MinIO
 
+print("1")
+
+task = Task.init(
+    project_name="test",
+    task_name="qwen72b-judge-batch_demo",
+    output_uri=None,
+)
+   
+
+print("2")
 config_params = {
     # Локальный путь ИЛИ s3:// / https:// ссылка — StorageManager скачает файл сам.
     "input_json": "judge_input.json",
     "output_json": "inference_results_judge.json",
 
-    "model_id": "Qwen/Qwen2.5-72B-Instruct",
-    "use_quantization": True,
+    "model_id": "Qwen/Qwen2.5-1.5B-Instruct",
+    "use_quantization": False,
     "max_new_tokens": 1024,   # для JSON-ответа судьи много не нужно
     "temperature": 0.0,       # детерминированная оценка, не 0.1 как у DeepSeek-примера
 
     "HF_TOKEN": "",           # Qwen открытый, обычно не требуется — оставить пустым
+
+    # False — прогон полностью локально (для отладки на слабой модели,
+    # без отправки задачи на агента). True — уходит в очередь на агент.
+    "run_remotely": False,
 }
 config_params = task.connect(config_params)
 
@@ -47,27 +57,31 @@ HF_TOKEN = config_params.get("HF_TOKEN") or os.environ.get("HF_TOKEN")
 if HF_TOKEN:
     login(HF_TOKEN)
 
-# Очередь уточнить в интерфейсе ClearML / у коллег — для 72B в 4-bit нужно
-# минимум ~40-45GB GPU-памяти.
-task.execute_remotely(queue_name="default")
+if config_params["run_remotely"]:
+    task.execute_remotely(queue_name="default")
 
-
+print("3")
 # ---------------------------------------------------------------------------
 # 2. Загрузка модели
 # ---------------------------------------------------------------------------
+has_cuda = torch.cuda.is_available()
+
 model_kwargs = dict(
-    dtype=torch.bfloat16,
-    device_map="auto",
+    dtype=torch.bfloat16 if has_cuda else torch.float32,
+    device_map="auto" if has_cuda else "cpu",
 )
 
-if config_params["use_quantization"]:
+if config_params["use_quantization"] and has_cuda:
     model_kwargs["quantization_config"] = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.bfloat16,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
     )
+elif config_params["use_quantization"] and not has_cuda:
+    print("CUDA не найдена — квантование bitsandbytes пропущено, модель загрузится в fp32 на CPU.")
 
+print("4")
 pipe = pipeline(
     "text-generation",
     model=config_params["model_id"],
@@ -75,7 +89,7 @@ pipe = pipeline(
     tokenizer=config_params["model_id"],
     trust_remote_code=True,
 )
-
+print("5")
 gen_config = GenerationConfig(
     max_new_tokens=config_params["max_new_tokens"],
     do_sample=config_params["temperature"] > 0,
@@ -84,7 +98,7 @@ gen_config = GenerationConfig(
     pad_token_id=pipe.tokenizer.eos_token_id,
 )
 
-
+print("6")
 # ---------------------------------------------------------------------------
 # 3. Загрузка входных данных (локально или из Blackhole2/S3)
 # ---------------------------------------------------------------------------
@@ -95,7 +109,7 @@ def load_records(path_or_url: str) -> list[dict]:
         local_path = path_or_url
 
     with open(local_path, encoding="utf-8") as f:
-        return json.load(f)
+        return json.load(f)[:2]
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +178,7 @@ def judge_one(rec: dict, save_flag: bool) -> dict | None:
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
+print("BEFORE MAIN CALL", flush=True)
 def main() -> None:
     records = load_records(config_params["input_json"])
     logger = task.get_logger()
@@ -190,6 +205,14 @@ def main() -> None:
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
+    # Упаковываем сэмплированные логи диалогов с моделью и грузим как артефакт —
+    # иначе они останутся на диске агента и пропадут после завершения задачи.
+    import shutil
+    logs_dir = "outputs/judge_logs"
+    if os.path.isdir(logs_dir):
+        shutil.make_archive("judge_logs", "zip", logs_dir)
+        task.upload_artifact(name="judge_logs", artifact_object="judge_logs.zip")
+
     # Передаём путь к файлу — ClearML сам прочитает и загрузит в output_uri (Blackhole2)
     task.upload_artifact(name="judge_results", artifact_object=output_path)
 
@@ -203,3 +226,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+print("AFTER MAIN CALL", flush=True)

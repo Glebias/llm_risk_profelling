@@ -3,19 +3,8 @@ from __future__ import annotations
 import json
 import logging
 
-from openai import OpenAI
-from pydantic import ValidationError
-
 from pathlib import Path
 from datetime import datetime
-
-from src.testing.schemas import JudgeResult
-
-from src.testing.config import (
-    OLLAMA_API_KEY,
-    OLLAMA_BASE_URL,
-    OLLAMA_MODEL,
-)
 
 logger = logging.getLogger("app.llm")
 
@@ -29,7 +18,7 @@ def save_llm_interaction(
     Сохраняет полный запрос и ответ модели.
     """
 
-    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    PROJECT_ROOT = Path(__file__).resolve().parent
     log_dir = PROJECT_ROOT / "outputs" / "judge_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
