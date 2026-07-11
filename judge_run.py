@@ -24,11 +24,11 @@ print("SCRIPT START", flush=True)
 # ---------------------------------------------------------------------------
 # 1. ClearML task + параметры
 # ---------------------------------------------------------------------------
-USE_S3_OUTPUT = False  # оставляем None — проект уже настроен грузить в Blackhole2 сам, работает без правок
+USE_S3_OUTPUT = False  # True — когда будет реальный прогон с сохранением в Blackhole2
 
 task = Task.init(
     project_name="test",
-    task_name="qwen72b-judge-batch_demo",
+    task_name="qwen72b-judge-batch",
     output_uri=(
         "s3://api.blackhole2.ai.innopolis.university:443/pershin-medailab"
         if USE_S3_OUTPUT else None
@@ -41,7 +41,7 @@ config_params = {
     "input_json": "judge_input.json",
     "output_json": "inference_results_judge.json",
 
-    "model_id": "Qwen/Qwen2.5-72B-Instruct-AWQ",
+    "model_id": "Qwen/Qwen2.5-72B-Instruct",  # для теста; на 72B переключить перед реальным прогоном
     "use_quantization": True,
     "max_new_tokens": 1024,
     "temperature": 0.0,
@@ -69,18 +69,12 @@ print("CONFIG DONE", flush=True)
 has_cuda = torch.cuda.is_available()
 print(f"CUDA available: {has_cuda}", flush=True)
 
-is_prequantized = "AWQ" in config_params["model_id"] or "GPTQ" in config_params["model_id"]
-
 model_kwargs = dict(
     dtype=torch.bfloat16 if has_cuda else torch.float32,
     device_map="auto" if has_cuda else "cpu",
-    low_cpu_mem_usage=True,  # грузит по шардам, не держит всю модель в RAM разом
 )
 
-if is_prequantized:
-    # AWQ/GPTQ-чекпоинт уже квантован — BitsAndBytesConfig не нужен и не должен применяться.
-    print("Модель предквантована (AWQ/GPTQ) — bitsandbytes не используется.", flush=True)
-elif config_params["use_quantization"] and has_cuda:
+if config_params["use_quantization"] and has_cuda:
     model_kwargs["quantization_config"] = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.bfloat16,
@@ -121,7 +115,7 @@ def load_records(path_or_url: str) -> list[dict]:
         local_path = path_or_url
 
     with open(local_path, encoding="utf-8") as f:
-        return json.load(f)  # полный датасет, срез убран после успешного теста
+        return json.load(f)
 
 
 # ---------------------------------------------------------------------------
@@ -203,10 +197,10 @@ def main() -> None:
         print(f"Processing patient {idx + 1}/{total}: {rec.get('patient_id')}", flush=True)
         logger.report_text(f"Processing patient {idx + 1}/{total}: {rec.get('patient_id')}")
 
-        # Сохраняем полный диалог только для выборки пациентов (для отладки промпта) —
-        # на полном датасете сохранять каждый резко раздует архив логов.
-        save_flag = (idx % 100 == 0)
-        row = judge_one(rec, save_flag=save_flag)
+        if idx in [1, 21, 33, 65, 111, 432, 445, 678, 999, 1282]:
+            row = judge_one(rec, save_flag=True)
+        else:
+            row = judge_one(rec, save_flag=False)
 
         if row is None:
             continue
@@ -214,15 +208,6 @@ def main() -> None:
         results.append(row)
         for metric in ("coverage", "precision", "safety", "usefulness"):
             logger.report_scalar(title=metric, series="judge", value=row[metric], iteration=idx)
-
-        # Промежуточное сохранение каждые 50 пациентов — чтобы не потерять
-        # весь прогресс, если что-то упадёт до конца полного датасета.
-        if (idx + 1) % 50 == 0:
-            output_path = config_params["output_json"]
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(results, f, ensure_ascii=False, indent=2)
-            task.upload_artifact(name="judge_results", artifact_object=output_path)
-            print(f"Checkpoint saved at patient {idx + 1}/{total}", flush=True)
 
     output_path = config_params["output_json"]
     with open(output_path, "w", encoding="utf-8") as f:
