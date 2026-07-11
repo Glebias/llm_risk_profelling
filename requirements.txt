@@ -9,7 +9,7 @@ huggingface_hub>=0.25.0
 pandas>=2.0.0
 numpy>=1.24.0
 boto3>=1.34.0
-clearml>=1.16
+gptqmodel
 clearml-agent>=1.9
 datasets
 sentencepiece
