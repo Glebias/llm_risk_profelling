@@ -197,10 +197,8 @@ def main() -> None:
         print(f"Processing patient {idx + 1}/{total}: {rec.get('patient_id')}", flush=True)
         logger.report_text(f"Processing patient {idx + 1}/{total}: {rec.get('patient_id')}")
 
-        if idx in [1, 21, 33, 65, 111, 432, 445, 678, 999, 1282]:
-            row = judge_one(rec, save_flag=True)
-        else:
-            row = judge_one(rec, save_flag=False)
+        save_flag = (idx % 100 == 0)
+        row = judge_one(rec, save_flag=save_flag)
 
         if row is None:
             continue
