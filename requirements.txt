@@ -14,3 +14,4 @@ clearml-agent>=1.9
 datasets
 sentencepiece
 scipy
+autoawq>=0.2.6
